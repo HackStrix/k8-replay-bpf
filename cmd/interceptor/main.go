@@ -6,10 +6,10 @@ import (
     // "os"
     // "os/signal"
     "time"
-
     "github.com/cilium/ebpf"
     "github.com/cilium/ebpf/link"
     "github.com/cilium/ebpf/rlimit"
+    bpf "github.com/hackstrix/k8-replay-bpf/internal/ebpf/bytecode"
 )
 
 func main() {
@@ -19,8 +19,8 @@ func main() {
     }
 
     // Load the compiled eBPF ELF and load it into the kernel.
-    var objs redirectObjects 
-    if err := loadRedirectObjects(&objs, nil); err != nil {
+    var objs bpf.RedirectObjects 
+    if err := bpf.LoadRedirectObjects(&objs, nil); err != nil {
         log.Fatal("Loading eBPF objects:", err)
     }
     defer objs.Close()
