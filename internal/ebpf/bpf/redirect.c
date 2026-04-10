@@ -20,16 +20,27 @@
 #define ETH_P_IP 0x0800 /* Internet Protocol Packet */
 
 
+struct event{
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+};
 
 // Defining a ring buffer map for delivery to userspace go code.
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF); // map type ring buffer
     __uint(max_entries, 256 * 1024);    // 256KB buffer size
+    __type(value, struct event);
 } events SEC(".maps");
 
 
 SEC("tc")
 int redirect(struct __sk_buff *ctx){
+
+
+
+
     void *data_end = (void*)(__u64)ctx->data_end;
     void *data = (void*)(__u64)ctx->data;
 
@@ -59,6 +70,21 @@ int redirect(struct __sk_buff *ctx){
     if ((void *)(l4+1) > data_end) return 0;
 
     bpf_printk("Got TCP Packet: src_port: %d, dst_port: %d", bpf_ntohs(l4->source), bpf_ntohs(l4->dest));
+
+
+    //// Setting up ringbuf
+    struct event *ev;
+    ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+    if (!ev) return 0;
+    /// ending ringbuf setup
+    
+    // pushing data to event
+    ev->src_ip = l3->saddr;
+    ev->dst_ip = l3->daddr;
+    ev->src_port = l4->source;
+    ev->dst_port = l4->dest;
+
+    bpf_ringbuf_submit(ev, 0);
 
     return 0;
 }

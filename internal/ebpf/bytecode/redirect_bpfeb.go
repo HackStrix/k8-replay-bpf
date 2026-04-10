@@ -8,9 +8,18 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type RedirectEvent struct {
+	_       structs.HostLayout
+	SrcIp   uint32
+	DstIp   uint32
+	SrcPort uint16
+	DstPort uint16
+}
 
 // LoadRedirect returns the embedded CollectionSpec for Redirect.
 func LoadRedirect() (*ebpf.CollectionSpec, error) {
