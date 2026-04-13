@@ -1,7 +1,7 @@
 # Variables
-BINARY_NAME=bin/interceptor
-GEN_PATH=./internal/ebpf/...
-CMD_PATH=./cmd/interceptor
+BINARY_NAME=bin/mirroring
+GEN_PATH=./edge/ebpf/
+CMD_PATH=./cmd/mirroring
 
 .PHONY: all
 all: generate build

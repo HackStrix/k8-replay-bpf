@@ -26,10 +26,13 @@ struct http_event {
 };
 
 // 3. Syscall arguments structure for sys_enter_write
+// We must match the kernel's layout exactly. The __pad ensures 8-byte alignment
+// for the pointers following syscall_nr.
 struct trace_event_raw_sys_enter_write {
 	u64 pad;
 	int syscall_nr;
-	unsigned int fd;
+	u32 __pad; // 4-byte alignment padding
+	unsigned long fd;
 	const char *buf;
 	size_t count;
 };
@@ -43,6 +46,10 @@ static __always_inline bool is_http_request(const char *buf) {
 		return false;
 	}
 
+
+	// print signature safely
+	// bpf_printk("Signature check: %c%c%c%c", signature[0], signature[1], signature[2], signature[3]);
+
 	// Compare against standard HTTP methods
 	if (signature[0] == 'G' && signature[1] == 'E' && signature[2] == 'T' && signature[3] == ' ') return true;
 	if (signature[0] == 'P' && signature[1] == 'O' && signature[2] == 'S' && signature[3] == 'T') return true;
@@ -54,16 +61,18 @@ static __always_inline bool is_http_request(const char *buf) {
 // 5. The Tracepoint Hook
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
+
 	// A. Check if the buffer has any data
 	if (ctx->count == 0 || !ctx->buf) {
 		return 0;
 	}
 
 	// B. The Filter: If it doesn't start with HTTP signatures, drop it immediately.
-	// This prevents us from tracing database writes or log appends.
 	if (!is_http_request(ctx->buf)) {
 		return 0;
 	}
+
+	bpf_printk("HTTP Request detected! PID: %d, FD: %d, Count: %d", ctx->syscall_nr, ctx->fd, ctx->count);
 
 	// C. We have a hit. Reserve memory in the ring buffer.
 	struct http_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
@@ -81,7 +90,6 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	event->len = (ctx->count < MAX_PAYLOAD_SIZE) ? ctx->count : MAX_PAYLOAD_SIZE;
 
 	// E. Safely copy the payload from user-space memory into our event
-	// We MUST use bpf_probe_read_user here because ctx->buf is a userspace pointer.
 	bpf_probe_read_user(&event->payload, event->len, ctx->buf);
 
 	// F. Ship it
