@@ -25,7 +25,7 @@ type HTTPEvent struct {
 	Tgid    uint32
 	Fd      uint32
 	Len     uint32
-	Payload [256]byte
+	Payload [1024]byte
 }
 
 func RunEdge() {
@@ -48,14 +48,19 @@ func RunEdge() {
 	}
 	defer objs.Close()
 
-	// 3. Attach the eBPF program to the tracepoint.
-	// We are attaching to syscalls:sys_enter_write
 	tp, err := link.Tracepoint("syscalls", "sys_enter_write", objs.TraceSysWrite, nil)
 	if err != nil {
-		log.Fatalf("Failed to attach tracepoint: %v", err)
+		log.Fatalf("Failed to attach write tracepoint: %v", err)
 	}
 	defer tp.Close()
-	log.Println("Tracepoint attached. Listening for HTTP writes...")
+
+	tpClose, err := link.Tracepoint("syscalls", "sys_enter_close", objs.TraceSysClose, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach close tracepoint: %v", err)
+	}
+	defer tpClose.Close()
+
+	log.Println("Tracepoints attached. Listening for HTTP traffic...")
 
 	// 4. Open the Ring Buffer from the kernel map
 	rd, err := ringbuf.NewReader(objs.Events)

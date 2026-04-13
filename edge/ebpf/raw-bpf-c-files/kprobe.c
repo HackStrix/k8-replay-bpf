@@ -8,13 +8,21 @@
 char __license[] SEC("license") = "Dual MIT/GPL";
 
 // We cannot grab unlimited memory in the kernel. We grab a slice.
-#define MAX_PAYLOAD_SIZE 256 
+#define MAX_PAYLOAD_SIZE 1024
 
 // 1. The Ring Buffer for Userspace
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1024 * 1024); // 1MB buffer
 } events SEC(".maps");
+
+// 2. Tracking map for active HTTP connections
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, u64);   // tgid << 32 | fd
+	__type(value, u32); // active flag
+} active_conns SEC(".maps");
 
 // 2. The Event Structure
 struct http_event {
@@ -31,10 +39,17 @@ struct http_event {
 struct trace_event_raw_sys_enter_write {
 	u64 pad;
 	int syscall_nr;
-	u32 __pad; // 4-byte alignment padding
+	u32 __pad;
 	unsigned long fd;
 	const char *buf;
 	size_t count;
+};
+
+struct trace_event_raw_sys_enter_close {
+	u64 pad;
+	int syscall_nr;
+	u32 __pad;
+	unsigned int fd;
 };
 
 // 4. Fast-path heuristic filter for HTTP requests
@@ -67,12 +82,30 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 		return 0;
 	}
 
-	// B. The Filter: If it doesn't start with HTTP signatures, drop it immediately.
-	if (!is_http_request(ctx->buf)) {
+	// B. The Filter Logic
+	u64 id = bpf_get_current_pid_tgid();
+	u32 tgid = id >> 32;
+	u64 key = (u64)tgid << 32 | ctx->fd;
+
+	bool is_new = is_http_request(ctx->buf);
+	bool is_active = false;
+
+	if (is_new) {
+		u32 val = 1;
+		bpf_map_update_elem(&active_conns, &key, &val, BPF_ANY);
+		is_active = true;
+	} else {
+		u32 *status = bpf_map_lookup_elem(&active_conns, &key);
+		if (status) {
+			is_active = true;
+		}
+	}
+
+	if (!is_active) {
 		return 0;
 	}
 
-	bpf_printk("HTTP Request detected! PID: %d, FD: %d, Count: %d", ctx->syscall_nr, ctx->fd, ctx->count);
+	bpf_printk("HTTP Traffic: PID: %d, FD: %d, New: %d, Count: %d", tgid, ctx->fd, is_new, ctx->count);
 
 	// C. We have a hit. Reserve memory in the ring buffer.
 	struct http_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
@@ -81,9 +114,8 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	}
 
 	// D. Gather Context
-	u64 id = bpf_get_current_pid_tgid();
-	event->pid = id >> 32;
-	event->tgid = id;
+	event->pid = id >> 32; // pid here is actually tgid in kernel context for userspace PID
+	event->tgid = id;      // full id
 	event->fd = ctx->fd;
 	
 	// Ensure we don't try to read more than our struct allows or what was written
@@ -95,5 +127,18 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	// F. Ship it
 	bpf_ringbuf_submit(event, 0);
 
+	return 0;
+}
+
+// 6. The Close Hook (Cleanup)
+SEC("tracepoint/syscalls/sys_enter_close")
+int trace_sys_close(struct trace_event_raw_sys_enter_close *ctx) {
+	u64 id = bpf_get_current_pid_tgid();
+	u32 tgid = id >> 32;
+	u64 key = (u64)tgid << 32 | ctx->fd;
+
+	// Remove from tracking map if present
+	bpf_map_delete_elem(&active_conns, &key);
+	
 	return 0;
 }

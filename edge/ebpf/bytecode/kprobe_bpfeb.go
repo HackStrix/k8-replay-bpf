@@ -54,6 +54,7 @@ type KprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type KprobeProgramSpecs struct {
+	TraceSysClose *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
 	TraceSysWrite *ebpf.ProgramSpec `ebpf:"trace_sys_write"`
 }
 
@@ -61,7 +62,8 @@ type KprobeProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type KprobeMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	ActiveConns *ebpf.MapSpec `ebpf:"active_conns"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
 }
 
 // KprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -90,11 +92,13 @@ func (o *KprobeObjects) Close() error {
 //
 // It can be passed to LoadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type KprobeMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	ActiveConns *ebpf.Map `ebpf:"active_conns"`
+	Events      *ebpf.Map `ebpf:"events"`
 }
 
 func (m *KprobeMaps) Close() error {
 	return _KprobeClose(
+		m.ActiveConns,
 		m.Events,
 	)
 }
@@ -109,11 +113,13 @@ type KprobeVariables struct {
 //
 // It can be passed to LoadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type KprobePrograms struct {
+	TraceSysClose *ebpf.Program `ebpf:"trace_sys_close"`
 	TraceSysWrite *ebpf.Program `ebpf:"trace_sys_write"`
 }
 
 func (p *KprobePrograms) Close() error {
 	return _KprobeClose(
+		p.TraceSysClose,
 		p.TraceSysWrite,
 	)
 }
