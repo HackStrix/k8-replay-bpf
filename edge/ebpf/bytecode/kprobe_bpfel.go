@@ -13,9 +13,28 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type KprobeActiveReadArgs struct {
+	_   structs.HostLayout
+	Fd  uint32
+	_   [4]byte
+	Buf uint64
+}
+
 type KprobeConnState struct {
 	_          structs.HostLayout
 	LastSeenNs uint64
+}
+
+type KprobeHttpEvent struct {
+	_         structs.HostLayout
+	Pid       uint32
+	Tgid      uint32
+	Fd        uint32
+	Len       uint32
+	Direction uint8
+	_         [7]byte
+	Timestamp uint64
+	Payload   [1024]int8
 }
 
 // LoadKprobe returns the embedded CollectionSpec for Kprobe.
@@ -60,8 +79,10 @@ type KprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type KprobeProgramSpecs struct {
-	TraceSysClose *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
-	TraceSysWrite *ebpf.ProgramSpec `ebpf:"trace_sys_write"`
+	TraceSysClose     *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
+	TraceSysEnterRead *ebpf.ProgramSpec `ebpf:"trace_sys_enter_read"`
+	TraceSysExitRead  *ebpf.ProgramSpec `ebpf:"trace_sys_exit_read"`
+	TraceSysWrite     *ebpf.ProgramSpec `ebpf:"trace_sys_write"`
 }
 
 // KprobeMapSpecs contains maps before they are loaded into the kernel.
@@ -69,6 +90,7 @@ type KprobeProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type KprobeMapSpecs struct {
 	ActiveConns *ebpf.MapSpec `ebpf:"active_conns"`
+	ActiveReads *ebpf.MapSpec `ebpf:"active_reads"`
 	Events      *ebpf.MapSpec `ebpf:"events"`
 }
 
@@ -99,12 +121,14 @@ func (o *KprobeObjects) Close() error {
 // It can be passed to LoadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type KprobeMaps struct {
 	ActiveConns *ebpf.Map `ebpf:"active_conns"`
+	ActiveReads *ebpf.Map `ebpf:"active_reads"`
 	Events      *ebpf.Map `ebpf:"events"`
 }
 
 func (m *KprobeMaps) Close() error {
 	return _KprobeClose(
 		m.ActiveConns,
+		m.ActiveReads,
 		m.Events,
 	)
 }
@@ -119,13 +143,17 @@ type KprobeVariables struct {
 //
 // It can be passed to LoadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type KprobePrograms struct {
-	TraceSysClose *ebpf.Program `ebpf:"trace_sys_close"`
-	TraceSysWrite *ebpf.Program `ebpf:"trace_sys_write"`
+	TraceSysClose     *ebpf.Program `ebpf:"trace_sys_close"`
+	TraceSysEnterRead *ebpf.Program `ebpf:"trace_sys_enter_read"`
+	TraceSysExitRead  *ebpf.Program `ebpf:"trace_sys_exit_read"`
+	TraceSysWrite     *ebpf.Program `ebpf:"trace_sys_write"`
 }
 
 func (p *KprobePrograms) Close() error {
 	return _KprobeClose(
 		p.TraceSysClose,
+		p.TraceSysEnterRead,
+		p.TraceSysExitRead,
 		p.TraceSysWrite,
 	)
 }

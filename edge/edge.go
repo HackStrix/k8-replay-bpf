@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -25,14 +24,23 @@ type ConnState struct {
 // 1. Map the C struct exactly.
 // If the memory layout doesn't match the kernel perfectly, your data will be garbage.
 type HTTPEvent struct {
-	Pid     uint32
-	Tgid    uint32
-	Fd      uint32
-	Len     uint32
-	Payload [1024]byte
+	Pid       uint32
+	Tgid      uint32
+	Fd        uint32
+	Len       uint32
+	Direction uint8
+	_         [7]byte // Padding to 8-byte boundary
+	Timestamp uint64
+	Payload   [1024]byte
 }
 
 func RunEdge() {
+	forwarder := NewStdoutForwarder()
+	if err := forwarder.Start(context.Background()); err != nil {
+		log.Fatalf("Failed to start forwarder: %v", err)
+	}
+	defer forwarder.Close()
+
 	// Set up a context to handle graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -57,6 +65,18 @@ func RunEdge() {
 		log.Fatalf("Failed to attach write tracepoint: %v", err)
 	}
 	defer tp.Close()
+
+	tpReadEnter, err := link.Tracepoint("syscalls", "sys_enter_read", objs.TraceSysEnterRead, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach read enter tracepoint: %v", err)
+	}
+	defer tpReadEnter.Close()
+
+	tpReadExit, err := link.Tracepoint("syscalls", "sys_exit_read", objs.TraceSysExitRead, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach read exit tracepoint: %v", err)
+	}
+	defer tpReadExit.Close()
 
 	tpClose, err := link.Tracepoint("syscalls", "sys_enter_close", objs.TraceSysClose, nil)
 	if err != nil {
@@ -101,12 +121,20 @@ func RunEdge() {
 		}
 
 		// 7. Safely extract only the populated part of the payload
-		// Event.Len tells us exactly how much of the 256-byte array is valid.
-		actualPayload := string(event.Payload[:event.Len])
+		// Event.Len tells us exactly how much of the 1024-byte array is valid.
+		actualPayload := event.Payload[:event.Len]
 
-		// For now, we just print. In production, this goes to the Reassembler.
-		fmt.Printf("-----------------------------------\n")
-		fmt.Printf("[PID: %d] [FD: %d] [Bytes: %d]\n", event.Pid, event.Fd, event.Len)
-		fmt.Printf("Payload:\n%s\n", actualPayload)
+		connID := (uint64(event.Tgid) << 32) | uint64(event.Fd)
+
+		protoEvent := ProtocolEvent{
+			ConnID:    connID,
+			Direction: Direction(event.Direction),
+			Timestamp: event.Timestamp,
+			Payload:   actualPayload,
+		}
+
+		if err := forwarder.Send(protoEvent); err != nil {
+			log.Printf("Failed to forward event: %v", err)
+		}
 	}
 }

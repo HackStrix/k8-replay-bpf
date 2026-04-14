@@ -10,10 +10,24 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 // We cannot grab unlimited memory in the kernel. We grab a slice.
 #define MAX_PAYLOAD_SIZE 1024
 
-// 1. The Ring Buffer for Userspace
+#define DIR_INBOUND 0
+#define DIR_OUTBOUND 1
+
+// 5. The Event Structure
+struct http_event {
+	u32 pid;
+	u32 tgid;
+	u32 fd;
+	u32 len;
+	u8 direction; // 0=INBOUND (read), 1=OUTBOUND (write)
+	u64 timestamp;
+	char payload[MAX_PAYLOAD_SIZE];
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1024 * 1024); // 1MB buffer
+	__type(value, struct http_event);
 } events SEC(".maps");
 
 struct conn_state {
@@ -29,14 +43,20 @@ struct {
 	__type(value, struct conn_state); // active state
 } active_conns SEC(".maps");
 
-// 2. The Event Structure
-struct http_event {
-	u32 pid;
-	u32 tgid;
+struct active_read_args {
 	u32 fd;
-	u32 len;
-	char payload[MAX_PAYLOAD_SIZE];
+	u64 buf; // Cast pointer to u64 to avoid bpf2go generation error
 };
+
+// 4. Tracking map for active read syscalls (pid_tgid -> args)
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__type(key, u64); 
+	__type(value, struct active_read_args);
+} active_reads SEC(".maps");
+
+// Moved up
 
 // 3. Syscall arguments structure for sys_enter_write
 // We must match the kernel's layout exactly. The __pad ensures 8-byte alignment
@@ -48,6 +68,22 @@ struct trace_event_raw_sys_enter_write {
 	unsigned long fd;
 	const char *buf;
 	size_t count;
+};
+
+struct trace_event_raw_sys_enter_read {
+	u64 pad;
+	int syscall_nr;
+	u32 __pad;
+	unsigned int fd;
+	const char *buf;
+	size_t count;
+};
+
+struct trace_event_raw_sys_exit_read {
+	u64 pad;
+	int syscall_nr;
+	u32 __pad;
+	long ret;
 };
 
 struct trace_event_raw_sys_enter_close {
@@ -78,7 +114,7 @@ static __always_inline bool is_http_request(const char *buf) {
 	return false;
 }
 
-// 5. The Tracepoint Hook
+// 5. The Tracepoint Hook for Write (Outbound)
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 
@@ -116,7 +152,7 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 		return 0;
 	}
 
-	bpf_printk("HTTP Traffic: PID: %d, FD: %d, New: %d, Count: %d", tgid, ctx->fd, is_new, ctx->count);
+	bpf_printk("HTTP Write: PID: %d, FD: %d, New: %d, Count: %d", tgid, ctx->fd, is_new, ctx->count);
 
 	// C. We have a hit. Reserve memory in the ring buffer.
 	struct http_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
@@ -128,6 +164,8 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	event->pid = id >> 32; // pid here is actually tgid in kernel context for userspace PID
 	event->tgid = id;      // full id
 	event->fd = ctx->fd;
+	event->direction = DIR_OUTBOUND;
+	event->timestamp = now;
 	
 	// Ensure we don't try to read more than our struct allows or what was written
 	event->len = (ctx->count < MAX_PAYLOAD_SIZE) ? ctx->count : MAX_PAYLOAD_SIZE;
@@ -138,6 +176,83 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	// F. Ship it
 	bpf_ringbuf_submit(event, 0);
 
+	return 0;
+}
+
+// 6. The Tracepoint Hooks for Read (Inbound)
+SEC("tracepoint/syscalls/sys_enter_read")
+int trace_sys_enter_read(struct trace_event_raw_sys_enter_read *ctx) {
+	u64 id = bpf_get_current_pid_tgid();
+	
+	struct active_read_args args = {
+		.fd = ctx->fd,
+		.buf = (u64)ctx->buf,
+	};
+	
+	bpf_map_update_elem(&active_reads, &id, &args, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
+	u64 id = bpf_get_current_pid_tgid();
+	
+	struct active_read_args *args = bpf_map_lookup_elem(&active_reads, &id);
+	if (!args) {
+		return 0;
+	}
+	
+	long ret = ctx->ret;
+	if (ret <= 0) {
+		bpf_map_delete_elem(&active_reads, &id);
+		return 0;
+	}
+
+	u32 tgid = id >> 32;
+	u64 key = (u64)tgid << 32 | args->fd;
+
+	bool is_new = is_http_request((const char *)args->buf);
+	bool is_active = false;
+	u64 now = bpf_ktime_get_ns();
+
+	if (is_new) {
+		struct conn_state state = {
+			.last_seen_ns = now,
+		};
+		bpf_map_update_elem(&active_conns, &key, &state, BPF_ANY);
+		is_active = true;
+	} else {
+		struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
+		if (state) {
+			is_active = true;
+			state->last_seen_ns = now;
+		}
+	}
+
+	if (!is_active) {
+		bpf_map_delete_elem(&active_reads, &id);
+		return 0;
+	}
+
+	bpf_printk("HTTP Read: PID: %d, FD: %d, New: %d, Count: %d", tgid, args->fd, is_new, ret);
+
+	struct http_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+	if (!event) {
+		bpf_map_delete_elem(&active_reads, &id);
+		return 0;
+	}
+
+	event->pid = id >> 32;
+	event->tgid = id;
+	event->fd = args->fd;
+	event->direction = DIR_INBOUND;
+	event->timestamp = now;
+	
+	event->len = (ret < MAX_PAYLOAD_SIZE) ? ret : MAX_PAYLOAD_SIZE;
+	bpf_probe_read_user(&event->payload, event->len, (const void *)args->buf);
+
+	bpf_ringbuf_submit(event, 0);
+	bpf_map_delete_elem(&active_reads, &id);
 	return 0;
 }
 
