@@ -15,8 +15,12 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
-	ebpf "github.com/hackstrix/k8-replay-bpf/edge/ebpf/bytecode"
+	ebpf_bytecode "github.com/hackstrix/k8-replay-bpf/edge/ebpf/bytecode"
 )
+
+type ConnState struct {
+	LastSeenNs uint64
+}
 
 // 1. Map the C struct exactly.
 // If the memory layout doesn't match the kernel perfectly, your data will be garbage.
@@ -42,8 +46,8 @@ func RunEdge() {
 
 	// 2. Load pre-compiled programs and maps into the kernel.
 	// bpf2go generated 'loadTracerObjects' for us based on the 'Tracer' prefix above.
-	objs := ebpf.KprobeObjects{}
-	if err := ebpf.LoadKprobeObjects(&objs, nil); err != nil {
+	objs := ebpf_bytecode.KprobeObjects{}
+	if err := ebpf_bytecode.LoadKprobeObjects(&objs, nil); err != nil {
 		log.Fatalf("Failed to load eBPF objects: %v", err)
 	}
 	defer objs.Close()

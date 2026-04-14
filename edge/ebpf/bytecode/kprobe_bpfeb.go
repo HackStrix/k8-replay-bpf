@@ -8,9 +8,15 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type KprobeConnState struct {
+	_          structs.HostLayout
+	LastSeenNs uint64
+}
 
 // LoadKprobe returns the embedded CollectionSpec for Kprobe.
 func LoadKprobe() (*ebpf.CollectionSpec, error) {

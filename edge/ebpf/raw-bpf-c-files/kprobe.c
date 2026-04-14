@@ -16,12 +16,17 @@ struct {
 	__uint(max_entries, 1024 * 1024); // 1MB buffer
 } events SEC(".maps");
 
-// 2. Tracking map for active HTTP connections
+struct conn_state {
+	u64 last_seen_ns;
+};
+
+// 3. Tracking map for active HTTP connections
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 10240);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__uint(map_flags, BPF_F_NO_COMMON_LRU);
 	__type(key, u64);   // tgid << 32 | fd
-	__type(value, u32); // active flag
+	__type(value, struct conn_state); // active state
 } active_conns SEC(".maps");
 
 // 2. The Event Structure
@@ -90,14 +95,20 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	bool is_new = is_http_request(ctx->buf);
 	bool is_active = false;
 
+	u64 now = bpf_ktime_get_ns();
+
 	if (is_new) {
-		u32 val = 1;
-		bpf_map_update_elem(&active_conns, &key, &val, BPF_ANY);
+		struct conn_state state = {
+			.last_seen_ns = now,
+		};
+		bpf_map_update_elem(&active_conns, &key, &state, BPF_ANY);
 		is_active = true;
 	} else {
-		u32 *status = bpf_map_lookup_elem(&active_conns, &key);
-		if (status) {
+		struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
+		if (state) {
 			is_active = true;
+			// Refresh timestamp to stay hot in LRU
+			state->last_seen_ns = now;
 		}
 	}
 
