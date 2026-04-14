@@ -115,20 +115,18 @@ static __always_inline bool is_http_request(const char *buf) {
 }
 
 // 5. The Tracepoint Hook for Write (Outbound)
-SEC("tracepoint/syscalls/sys_enter_write")
-int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
-
+static __always_inline int handle_write(unsigned int fd, const char *buf, size_t count) {
 	// A. Check if the buffer has any data
-	if (ctx->count == 0 || !ctx->buf) {
+	if (count == 0 || !buf) {
 		return 0;
 	}
 
 	// B. The Filter Logic
 	u64 id = bpf_get_current_pid_tgid();
 	u32 tgid = id >> 32;
-	u64 key = (u64)tgid << 32 | ctx->fd;
+	u64 key = (u64)tgid << 32 | fd;
 
-	bool is_new = is_http_request(ctx->buf);
+	bool is_new = is_http_request(buf);
 	bool is_active = false;
 
 	u64 now = bpf_ktime_get_ns();
@@ -152,7 +150,7 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 		return 0;
 	}
 
-	bpf_printk("HTTP Write: PID: %d, FD: %d, New: %d, Count: %d", tgid, ctx->fd, is_new, ctx->count);
+	bpf_printk("HTTP Write: PID: %d, FD: %d, New: %d, Count: %d", tgid, fd, is_new, count);
 
 	// C. We have a hit. Reserve memory in the ring buffer.
 	struct http_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
@@ -163,15 +161,15 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	// D. Gather Context
 	event->pid = id >> 32; // pid here is actually tgid in kernel context for userspace PID
 	event->tgid = id;      // full id
-	event->fd = ctx->fd;
+	event->fd = fd;
 	event->direction = DIR_OUTBOUND;
 	event->timestamp = now;
 	
 	// Ensure we don't try to read more than our struct allows or what was written
-	event->len = (ctx->count < MAX_PAYLOAD_SIZE) ? ctx->count : MAX_PAYLOAD_SIZE;
+	event->len = (count < MAX_PAYLOAD_SIZE) ? count : MAX_PAYLOAD_SIZE;
 
 	// E. Safely copy the payload from user-space memory into our event
-	bpf_probe_read_user(&event->payload, event->len, ctx->buf);
+	bpf_probe_read_user(&event->payload, event->len, buf);
 
 	// F. Ship it
 	bpf_ringbuf_submit(event, 0);
@@ -179,22 +177,41 @@ int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
 	return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_write")
+int trace_sys_write(struct trace_event_raw_sys_enter_write *ctx) {
+	return handle_write(ctx->fd, ctx->buf, ctx->count);
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int trace_sys_sendto(struct trace_event_raw_sys_enter_write *ctx) {
+	return handle_write(ctx->fd, ctx->buf, ctx->count);
+}
+
+
 // 6. The Tracepoint Hooks for Read (Inbound)
-SEC("tracepoint/syscalls/sys_enter_read")
-int trace_sys_enter_read(struct trace_event_raw_sys_enter_read *ctx) {
+static __always_inline int handle_enter_read(unsigned int fd, const char *buf) {
 	u64 id = bpf_get_current_pid_tgid();
 	
 	struct active_read_args args = {
-		.fd = ctx->fd,
-		.buf = (u64)ctx->buf,
+		.fd = fd,
+		.buf = (u64)buf,
 	};
 	
 	bpf_map_update_elem(&active_reads, &id, &args, BPF_ANY);
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_read")
-int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
+SEC("tracepoint/syscalls/sys_enter_read")
+int trace_sys_enter_read(struct trace_event_raw_sys_enter_read *ctx) {
+	return handle_enter_read(ctx->fd, ctx->buf);
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvfrom")
+int trace_sys_enter_recvfrom(struct trace_event_raw_sys_enter_read *ctx) {
+	return handle_enter_read(ctx->fd, ctx->buf);
+}
+
+static __always_inline int handle_exit_read(long ret) {
 	u64 id = bpf_get_current_pid_tgid();
 	
 	struct active_read_args *args = bpf_map_lookup_elem(&active_reads, &id);
@@ -202,7 +219,6 @@ int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
 		return 0;
 	}
 	
-	long ret = ctx->ret;
 	if (ret <= 0) {
 		bpf_map_delete_elem(&active_reads, &id);
 		return 0;
@@ -255,6 +271,17 @@ int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
 	bpf_map_delete_elem(&active_reads, &id);
 	return 0;
 }
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
+	return handle_exit_read(ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_recvfrom")
+int trace_sys_exit_recvfrom(struct trace_event_raw_sys_exit_read *ctx) {
+	return handle_exit_read(ctx->ret);
+}
+
 
 // 6. The Close Hook (Cleanup)
 SEC("tracepoint/syscalls/sys_enter_close")

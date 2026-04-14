@@ -79,10 +79,13 @@ type KprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type KprobeProgramSpecs struct {
-	TraceSysClose     *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
-	TraceSysEnterRead *ebpf.ProgramSpec `ebpf:"trace_sys_enter_read"`
-	TraceSysExitRead  *ebpf.ProgramSpec `ebpf:"trace_sys_exit_read"`
-	TraceSysWrite     *ebpf.ProgramSpec `ebpf:"trace_sys_write"`
+	TraceSysClose         *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
+	TraceSysEnterRead     *ebpf.ProgramSpec `ebpf:"trace_sys_enter_read"`
+	TraceSysEnterRecvfrom *ebpf.ProgramSpec `ebpf:"trace_sys_enter_recvfrom"`
+	TraceSysExitRead      *ebpf.ProgramSpec `ebpf:"trace_sys_exit_read"`
+	TraceSysExitRecvfrom  *ebpf.ProgramSpec `ebpf:"trace_sys_exit_recvfrom"`
+	TraceSysSendto        *ebpf.ProgramSpec `ebpf:"trace_sys_sendto"`
+	TraceSysWrite         *ebpf.ProgramSpec `ebpf:"trace_sys_write"`
 }
 
 // KprobeMapSpecs contains maps before they are loaded into the kernel.
@@ -143,17 +146,23 @@ type KprobeVariables struct {
 //
 // It can be passed to LoadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type KprobePrograms struct {
-	TraceSysClose     *ebpf.Program `ebpf:"trace_sys_close"`
-	TraceSysEnterRead *ebpf.Program `ebpf:"trace_sys_enter_read"`
-	TraceSysExitRead  *ebpf.Program `ebpf:"trace_sys_exit_read"`
-	TraceSysWrite     *ebpf.Program `ebpf:"trace_sys_write"`
+	TraceSysClose         *ebpf.Program `ebpf:"trace_sys_close"`
+	TraceSysEnterRead     *ebpf.Program `ebpf:"trace_sys_enter_read"`
+	TraceSysEnterRecvfrom *ebpf.Program `ebpf:"trace_sys_enter_recvfrom"`
+	TraceSysExitRead      *ebpf.Program `ebpf:"trace_sys_exit_read"`
+	TraceSysExitRecvfrom  *ebpf.Program `ebpf:"trace_sys_exit_recvfrom"`
+	TraceSysSendto        *ebpf.Program `ebpf:"trace_sys_sendto"`
+	TraceSysWrite         *ebpf.Program `ebpf:"trace_sys_write"`
 }
 
 func (p *KprobePrograms) Close() error {
 	return _KprobeClose(
 		p.TraceSysClose,
 		p.TraceSysEnterRead,
+		p.TraceSysEnterRecvfrom,
 		p.TraceSysExitRead,
+		p.TraceSysExitRecvfrom,
+		p.TraceSysSendto,
 		p.TraceSysWrite,
 	)
 }

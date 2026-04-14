@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 )
 
 // StdoutForwarder is a simple forwarder for MVP/Testing that outputs to standard out.
@@ -19,7 +21,7 @@ func (s *StdoutForwarder) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *StdoutForwarder) Send(msg ProtocolEvent) error {
+func (s *StdoutForwarder) Send(msg models.ProtocolEvent) error {
 	// We encode Payload as base64 or custom string format to avoid JSON output messing up raw bytes.
 	// But for MVP readability, let's just create a raw log.
 

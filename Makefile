@@ -17,7 +17,8 @@ generate:
 build:
 	@echo "Building user-space binary..."
 	mkdir -p bin
-	go build -o $(BINARY_NAME) $(CMD_PATH)
+	go build -o bin/mirroring ./cmd/mirroring
+	go build -o bin/collector ./cmd/collector
 
 # Run the application (requires sudo for eBPF)
 .PHONY: run

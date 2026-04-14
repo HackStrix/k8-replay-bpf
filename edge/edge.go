@@ -15,6 +15,8 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	ebpf_bytecode "github.com/hackstrix/k8-replay-bpf/edge/ebpf/bytecode"
+	"github.com/hackstrix/k8-replay-bpf/pkg/forwarder"
+	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 )
 
 type ConnState struct {
@@ -35,11 +37,11 @@ type HTTPEvent struct {
 }
 
 func RunEdge() {
-	forwarder := NewStdoutForwarder()
-	if err := forwarder.Start(context.Background()); err != nil {
+	var fwd Forwarder = forwarder.NewTCPForwarder("127.0.0.1:9000")
+	if err := fwd.Start(context.Background()); err != nil {
 		log.Fatalf("Failed to start forwarder: %v", err)
 	}
-	defer forwarder.Close()
+	defer fwd.Close()
 
 	// Set up a context to handle graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -77,6 +79,24 @@ func RunEdge() {
 		log.Fatalf("Failed to attach read exit tracepoint: %v", err)
 	}
 	defer tpReadExit.Close()
+
+	tpRecvfromEnter, err := link.Tracepoint("syscalls", "sys_enter_recvfrom", objs.TraceSysEnterRecvfrom, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach recvfrom enter tracepoint: %v", err)
+	}
+	defer tpRecvfromEnter.Close()
+
+	tpRecvfromExit, err := link.Tracepoint("syscalls", "sys_exit_recvfrom", objs.TraceSysExitRecvfrom, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach recvfrom exit tracepoint: %v", err)
+	}
+	defer tpRecvfromExit.Close()
+
+	tpSendtoEnter, err := link.Tracepoint("syscalls", "sys_enter_sendto", objs.TraceSysSendto, nil)
+	if err != nil {
+		log.Fatalf("Failed to attach sendto enter tracepoint: %v", err)
+	}
+	defer tpSendtoEnter.Close()
 
 	tpClose, err := link.Tracepoint("syscalls", "sys_enter_close", objs.TraceSysClose, nil)
 	if err != nil {
@@ -126,14 +146,14 @@ func RunEdge() {
 
 		connID := (uint64(event.Tgid) << 32) | uint64(event.Fd)
 
-		protoEvent := ProtocolEvent{
+		protoEvent := models.ProtocolEvent{
 			ConnID:    connID,
-			Direction: Direction(event.Direction),
+			Direction: models.Direction(event.Direction),
 			Timestamp: event.Timestamp,
 			Payload:   actualPayload,
 		}
 
-		if err := forwarder.Send(protoEvent); err != nil {
+		if err := fwd.Send(protoEvent); err != nil {
 			log.Printf("Failed to forward event: %v", err)
 		}
 	}
