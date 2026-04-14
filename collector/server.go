@@ -10,14 +10,12 @@ import (
 )
 
 type Server struct {
-	addr    string
-	streams *StreamManager
+	addr string
 }
 
 func NewServer(addr string) *Server {
 	return &Server{
-		addr:    addr,
-		streams: NewStreamManager(),
+		addr: addr,
 	}
 }
 
@@ -44,15 +42,28 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	decoder := json.NewDecoder(conn)
 	for {
-		var event models.ProtocolEvent
-		if err := decoder.Decode(&event); err != nil {
+		var result models.SessionResult
+		if err := decoder.Decode(&result); err != nil {
 			if err != io.EOF {
 				log.Printf("Error decoding event: %v", err)
 			}
 			break
 		}
 
-		s.streams.HandleEvent(event)
+		log.Printf("\n=== [SaaS Collector] New Result for ConnID: %d ===", result.ConnID)
+		log.Printf("Request: %s %s", result.ProdReqMethod, result.ProdReqURL)
+		log.Printf("Prod Res: %d | Canary Res: %d", result.ProdResStatus, result.CanaryResStatus)
+		log.Printf("Latency: %v", result.Latency)
+		
+		if len(result.CanaryResPayload) > 0 {
+			// Trim payload for display safety
+			payloadStr := string(result.CanaryResPayload)
+			if len(payloadStr) > 300 {
+				payloadStr = payloadStr[:300] + "...(truncated)"
+			}
+			log.Printf("Canary Body:\n%s", payloadStr)
+		}
+		log.Printf("====================================================\n")
 	}
 	log.Printf("Edge client disconnected")
 }

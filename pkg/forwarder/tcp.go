@@ -7,8 +7,6 @@ import (
 	"log"
 	"net"
 	"time"
-
-	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 )
 
 type TCPForwarder struct {
@@ -42,7 +40,7 @@ func (t *TCPForwarder) connect() error {
 	return nil
 }
 
-func (t *TCPForwarder) Send(msg models.ProtocolEvent) error {
+func (t *TCPForwarder) Send(msg any) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err

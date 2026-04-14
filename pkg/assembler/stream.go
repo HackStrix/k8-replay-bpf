@@ -1,9 +1,7 @@
-package collector
+package assembler
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -22,8 +20,10 @@ type connection struct {
 }
 
 type StreamManager struct {
-	mu    sync.Mutex
-	conns map[uint64]*connection
+	mu         sync.Mutex
+	conns      map[uint64]*connection
+	OnRequest  func(req *http.Request, body []byte)
+	OnResponse func(res *http.Response, body []byte)
 }
 
 func NewStreamManager() *StreamManager {
@@ -104,11 +104,11 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 			
 			// Process Request
-			log.Printf("\n=== [Conn %d] NEW HTTP REQUEST ===", id)
-			log.Printf("%s %s %s", req.Method, req.URL.String(), req.Proto)
-			for k, v := range req.Header {
-				log.Printf("%s: %v", k, v)
-			}
+			// log.Printf("\n=== [Conn %d] NEW HTTP REQUEST ===", id)
+			// log.Printf("%s %s %s", req.Method, req.URL.String(), req.Proto)
+			// for k, v := range req.Header {
+			//	log.Printf("%s: %v", k, v)
+			// }
 			
 			if req.Header.Get("Upgrade") == "websocket" || req.Header.Get("upgrade") == "websocket" {
 				log.Printf("[%d] Ignoring WebSocket upgrade.", id)
@@ -116,15 +116,16 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 				return // Let goroutines exit
 			}
 
-			// Try to read body for display
+			// Try to read body
+			var bodyBytes []byte
 			if req.Body != nil {
-				bodyBytes, _ := io.ReadAll(req.Body)
+				bodyBytes, _ = io.ReadAll(req.Body)
 				req.Body.Close()
-				if len(bodyBytes) > 0 {
-					log.Printf("\n[Body: %d bytes]\n%s", len(bodyBytes), string(bytes.ReplaceAll(bodyBytes, []byte("\r\n"), []byte(" "))))
-				}
 			}
-			log.Printf("===================================\n")
+
+			if sm.OnRequest != nil {
+				sm.OnRequest(req, bodyBytes)
+			}
 		}
 	}()
 
@@ -143,8 +144,8 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 			
 			// Process Response
-			log.Printf("\n=== [Conn %d] NEW HTTP RESPONSE ===", id)
-			log.Printf("%s %s", res.Proto, res.Status)
+			// log.Printf("\n=== [Conn %d] NEW HTTP RESPONSE ===", id)
+			// log.Printf("%s %s", res.Proto, res.Status)
 			
 			if res.StatusCode == 101 {
 				log.Printf("[%d] Ignoring 101 Switching Protocols.", id)
@@ -152,19 +153,15 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 				return // exit goroutine
 			}
 
+			var bodyBytes []byte
 			if res.Body != nil {
-				bodyBytes, _ := io.ReadAll(res.Body)
+				bodyBytes, _ = io.ReadAll(res.Body)
 				res.Body.Close()
-				
-				// Attempt nicely format JSON response body if possible
-				var prettyJSON bytes.Buffer
-				if err := json.Indent(&prettyJSON, bodyBytes, "", "  "); err == nil {
-					log.Printf("\n%s", prettyJSON.String())
-				} else if len(bodyBytes) > 0 {
-					log.Printf("\n[Body: %d bytes]\n%s", len(bodyBytes), string(bytes.ReplaceAll(bodyBytes, []byte("\r\n"), []byte(" "))))
-				}
 			}
-			log.Printf("====================================\n")
+
+			if sm.OnResponse != nil {
+				sm.OnResponse(res, bodyBytes)
+			}
 		}
 	}()
 

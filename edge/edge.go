@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"net/http"
 	"os/signal"
 	"syscall"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	ebpf_bytecode "github.com/hackstrix/k8-replay-bpf/edge/ebpf/bytecode"
+	"github.com/hackstrix/k8-replay-bpf/pkg/assembler"
 	"github.com/hackstrix/k8-replay-bpf/pkg/forwarder"
 	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 )
@@ -37,6 +39,8 @@ type HTTPEvent struct {
 }
 
 func RunEdge() {
+
+	// Forwarder configuration for sending diffs/summaries to SaaS Collector
 	var fwd Forwarder = forwarder.NewTCPForwarder("127.0.0.1:9000")
 	if err := fwd.Start(context.Background()); err != nil {
 		log.Fatalf("Failed to start forwarder: %v", err)
@@ -119,6 +123,34 @@ func RunEdge() {
 		rd.Close()
 	}()
 
+	canaryURL := os.Getenv("CANARY_URL")
+	if canaryURL == "" {
+		canaryURL = "http://localhost:8000"
+	}
+
+	replayEngine, err := NewReplayEngine(canaryURL)
+	if err != nil {
+		log.Fatalf("Invalid canary URL: %v", err)
+	}
+
+	streamManager := assembler.NewStreamManager()
+	
+	// Local Smart Proxy Replay Trigger
+	streamManager.OnRequest = func(req *http.Request, body []byte) {
+		log.Printf("[EDGE] Hooked Production Request: %s %s%s", req.Method, req.Host, req.URL.String())
+		
+		// The ProdReq is assembled, so we fire the Canary replay immediately.
+		// Wait, we need connection ID. StreamManager doesn't pass ConnID into OnRequest!
+		// But replayEngine doesn't strictly need ConnID if we just send back SessionResult?
+		// We can mock ConnID as 0 for now until we fully refactor StreamManager to pass it in.
+		replayEngine.FireAndForget(req, body, fwd, 0)
+	}
+
+	streamManager.OnResponse = func(res *http.Response, body []byte) {
+		log.Printf("[EDGE] Hooked Production Response: %d %s", res.StatusCode, res.Status)
+		// Later: Correlate this ProdResponse with CanaryResponse to send upstream to SaaS Collector
+	}
+
 	var event HTTPEvent
 
 	// 5. The Event Loop - This must be extremely fast.
@@ -153,8 +185,6 @@ func RunEdge() {
 			Payload:   actualPayload,
 		}
 
-		if err := fwd.Send(protoEvent); err != nil {
-			log.Printf("Failed to forward event: %v", err)
-		}
+		streamManager.HandleEvent(protoEvent)
 	}
 }
