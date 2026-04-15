@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-server-prod-service
+spec:
+  selector:
+    app: sample-server
+    version: prod
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-server-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-server
+      version: prod
+  template:
+    metadata:
+      labels:
+        app: sample-server
+        version: prod
+    spec:
+      containers:
+      - name: sample-server
+        image: dev-registry:5000/sample-server:latest # Assuming built and pushed to k3d registry
+        ports:
+        - containerPort: 8080
+        env:
+        - name: VERSION
+          value: "PROD"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-server-canary-service
+spec:
+  selector:
+    app: sample-server
+    version: canary
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-server-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-server
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: sample-server
+        version: canary
+    spec:
+      containers:
+      - name: sample-server
+        image: dev-registry:5000/sample-server:latest # Same image
+        ports:
+        - containerPort: 8080
+        env:
+        - name: VERSION
+          value: "CANARY"

@@ -17,13 +17,15 @@ type connection struct {
 	resWriter      *io.PipeWriter
 	ignored        bool
 	lastActivity   time.Time
+	podName        string
+	podNamespace   string
 }
 
 type StreamManager struct {
 	mu         sync.Mutex
 	conns      map[uint64]*connection
-	OnRequest  func(req *http.Request, body []byte)
-	OnResponse func(res *http.Response, body []byte)
+	OnRequest  func(req *http.Request, body []byte, podName, podNamespace string)
+	OnResponse func(res *http.Response, body []byte, podName, podNamespace string)
 }
 
 func NewStreamManager() *StreamManager {
@@ -39,6 +41,13 @@ func (sm *StreamManager) HandleEvent(event models.ProtocolEvent) {
 		conn = sm.newConnection(event.ConnID)
 		sm.conns[event.ConnID] = conn
 	}
+	
+	// Update metadata if it was missing or if it changed (though it shouldn't for the same ConnID)
+	if conn.podName == "" && event.PodName != "" {
+		conn.podName = event.PodName
+		conn.podNamespace = event.PodNamespace
+	}
+
 	if conn.ignored {
 		sm.mu.Unlock()
 		return
@@ -124,7 +133,7 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 
 			if sm.OnRequest != nil {
-				sm.OnRequest(req, bodyBytes)
+				sm.OnRequest(req, bodyBytes, conn.podName, conn.podNamespace)
 			}
 		}
 	}()
@@ -160,7 +169,7 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 
 			if sm.OnResponse != nil {
-				sm.OnResponse(res, bodyBytes)
+				sm.OnResponse(res, bodyBytes, conn.podName, conn.podNamespace)
 			}
 		}
 	}()

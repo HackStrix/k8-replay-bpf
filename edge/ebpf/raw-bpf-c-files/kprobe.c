@@ -20,6 +20,7 @@ struct http_event {
 	u32 fd;
 	u32 len;
 	u8 direction; // 0=INBOUND (read), 1=OUTBOUND (write)
+	u32 netns_id;
 	u64 timestamp;
 	char payload[MAX_PAYLOAD_SIZE];
 };
@@ -163,6 +164,10 @@ static __always_inline int handle_write(unsigned int fd, const char *buf, size_t
 	event->tgid = id;      // full id
 	event->fd = fd;
 	event->direction = DIR_OUTBOUND;
+	
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	event->netns_id = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+	
 	event->timestamp = now;
 	
 	// Ensure we don't try to read more than our struct allows or what was written
@@ -262,6 +267,10 @@ static __always_inline int handle_exit_read(long ret) {
 	event->tgid = id;
 	event->fd = args->fd;
 	event->direction = DIR_INBOUND;
+
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	event->netns_id = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+
 	event->timestamp = now;
 	
 	event->len = (ret < MAX_PAYLOAD_SIZE) ? ret : MAX_PAYLOAD_SIZE;

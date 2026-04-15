@@ -22,10 +22,13 @@ func (d Direction) String() string {
 
 // ProtocolEvent is emitted by the Edge Pipeline directly from eBPF
 type ProtocolEvent struct {
-	ConnID    uint64
-	Direction Direction
-	Timestamp uint64
-	Payload   []byte // Extracted chunk of the HTTP message
+	ConnID       uint64
+	Direction    Direction
+	Timestamp    uint64
+	Payload      []byte // Extracted chunk of the HTTP message
+	PodName      string // Associated Pod Name
+	PodNamespace string // Associated Pod Namespace
+	NetnsID      uint32 // Network Namespace ID
 }
 
 // SessionResult represents a fully completed replay lifecycle.

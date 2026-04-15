@@ -18,7 +18,10 @@ import (
 	ebpf_bytecode "github.com/hackstrix/k8-replay-bpf/edge/ebpf/bytecode"
 	"github.com/hackstrix/k8-replay-bpf/pkg/assembler"
 	"github.com/hackstrix/k8-replay-bpf/pkg/forwarder"
+	"github.com/hackstrix/k8-replay-bpf/pkg/k8s"
 	"github.com/hackstrix/k8-replay-bpf/pkg/models"
+	"strings"
+	"time"
 )
 
 type ConnState struct {
@@ -28,14 +31,15 @@ type ConnState struct {
 // 1. Map the C struct exactly.
 // If the memory layout doesn't match the kernel perfectly, your data will be garbage.
 type HTTPEvent struct {
-	Pid       uint32
-	Tgid      uint32
-	Fd        uint32
-	Len       uint32
-	Direction uint8
-	_         [7]byte // Padding to 8-byte boundary
-	Timestamp uint64
-	Payload   [1024]byte
+	Pid         uint32
+	Tgid        uint32
+	Fd          uint32
+	Len         uint32
+	Direction   uint8
+	_           [3]byte // Padding to 4-byte boundary
+	NetnsID     uint32  // Network Namespace ID
+	Timestamp   uint64
+	Payload     [1024]byte
 }
 
 func RunEdge() {
@@ -125,7 +129,8 @@ func RunEdge() {
 
 	canaryURL := os.Getenv("CANARY_URL")
 	if canaryURL == "" {
-		canaryURL = "http://localhost:8000"
+		// Default to the in-cluster service address of the canary
+		canaryURL = "http://sample-server-canary-service.default.svc.cluster.local:8080"
 	}
 
 	replayEngine, err := NewReplayEngine(canaryURL)
@@ -134,21 +139,33 @@ func RunEdge() {
 	}
 
 	streamManager := assembler.NewStreamManager()
+
+	mapper, err := k8s.NewPodMapper(10 * time.Second)
+	if err != nil {
+		log.Printf("[WARN] Failed to initialize Pod Mapper: %v. Running without Pod metadata.", err)
+	} else {
+		log.Printf("[INFO] Pod Mapper initialized successfully for node: %s", os.Getenv("NODE_NAME"))
+	}
 	
 	// Local Smart Proxy Replay Trigger
-	streamManager.OnRequest = func(req *http.Request, body []byte) {
-		log.Printf("[EDGE] Hooked Production Request: %s %s%s", req.Method, req.Host, req.URL.String())
+	streamManager.OnRequest = func(req *http.Request, body []byte, podName, podNamespace string) {
+		// Check if this request is targeted at our production deployment
+		isProd := strings.HasPrefix(podName, "sample-server-prod")
 		
-		// The ProdReq is assembled, so we fire the Canary replay immediately.
-		// Wait, we need connection ID. StreamManager doesn't pass ConnID into OnRequest!
-		// But replayEngine doesn't strictly need ConnID if we just send back SessionResult?
-		// We can mock ConnID as 0 for now until we fully refactor StreamManager to pass it in.
-		replayEngine.FireAndForget(req, body, fwd, 0)
+		if isProd {
+			log.Printf("[EDGE] Hooked PROD Request: %s %s from %s/%s. Mirroring to Canary.", req.Method, req.URL.String(), podNamespace, podName)
+			// Trigger the Canary replay immediately.
+			replayEngine.FireAndForget(req, body, fwd, 0)
+		} else {
+			// Optional: Log other traffic but don't mirror
+			// log.Printf("[EDGE] Observed traffic from %s/%s (not mirroring)", podNamespace, podName)
+		}
 	}
 
-	streamManager.OnResponse = func(res *http.Response, body []byte) {
-		log.Printf("[EDGE] Hooked Production Response: %d %s", res.StatusCode, res.Status)
-		// Later: Correlate this ProdResponse with CanaryResponse to send upstream to SaaS Collector
+	streamManager.OnResponse = func(res *http.Response, body []byte, podName, podNamespace string) {
+		if strings.HasPrefix(podName, "sample-server-prod") {
+			log.Printf("[EDGE] Hooked PROD Response: %d %s from %s/%s", res.StatusCode, res.Status, podNamespace, podName)
+		}
 	}
 
 	var event HTTPEvent
@@ -172,6 +189,8 @@ func RunEdge() {
 			continue
 		}
 
+		// log.Printf("[DEBUG] Raw Event: TGID=%d, FD=%d, Direction=%d, NetnsID=%d", event.Tgid, event.Fd, event.Direction, event.NetnsID)
+
 		// 7. Safely extract only the populated part of the payload
 		// Event.Len tells us exactly how much of the 1024-byte array is valid.
 		actualPayload := event.Payload[:event.Len]
@@ -179,10 +198,20 @@ func RunEdge() {
 		connID := (uint64(event.Tgid) << 32) | uint64(event.Fd)
 
 		protoEvent := models.ProtocolEvent{
-			ConnID:    connID,
-			Direction: models.Direction(event.Direction),
-			Timestamp: event.Timestamp,
-			Payload:   actualPayload,
+			ConnID:      connID,
+			Direction:   models.Direction(event.Direction),
+			Timestamp:   event.Timestamp,
+			Payload:     actualPayload,
+			NetnsID:     event.NetnsID,
+		}
+
+		// 8. Enrich with Pod Metadata if mapper is available
+		if mapper != nil {
+			if pod, err := mapper.GetPodByTGID(event.Tgid); err == nil {
+				protoEvent.PodName = pod.Name
+				protoEvent.PodNamespace = pod.Namespace
+				log.Printf("[EDGE] Event matched Pod: %s/%s (TGID: %d)", pod.Namespace, pod.Name, event.Tgid)
+			}
 		}
 
 		streamManager.HandleEvent(protoEvent)

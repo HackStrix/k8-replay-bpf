@@ -32,7 +32,8 @@ type KprobeHttpEvent struct {
 	Fd        uint32
 	Len       uint32
 	Direction uint8
-	_         [7]byte
+	_         [3]byte
+	NetnsId   uint32
 	Timestamp uint64
 	Payload   [1024]int8
 }
