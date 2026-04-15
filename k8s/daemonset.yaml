@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-repeater
+  namespace: default
+  labels:
+    app: ebpf-repeater
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-repeater
+  template:
+    metadata:
+      labels:
+        app: ebpf-repeater
+    spec:
+      hostPID: true
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: ebpf-repeater
+        image: ebpf-repeater:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: sys-kernel-debug
+          mountPath: /sys/kernel/debug
+          readOnly: false
+      volumes:
+      - name: sys-kernel-debug
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
