@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+	"math/rand"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -223,12 +224,25 @@ func RunEdge() {
 			NetnsID:     event.NetnsID,
 		}
 
+		// lets sample 0.5% of all events here to logs
+		if rand.Intn(500) == 0 {
+			log.Printf("[DEBUG] Proto Event ConnID: %d", protoEvent.ConnID)
+			log.Printf("[DEBUG] Proto Event Direction: %d", protoEvent.Direction)
+			log.Printf("[DEBUG] Proto Event Timestamp: %d", protoEvent.Timestamp)
+			// log.Printf("[DEBUG] Proto Event Payload: %s", string(protoEvent.Payload))
+			log.Printf("[DEBUG] Proto Event NetnsID: %d", protoEvent.NetnsID)
+			log.Printf("[DEBUG] Proto Event TGID: %d", event.Tgid)
+			log.Printf("[DEBUG] Proto Event PID: %d", event.Pid)
+			
+		}
+
 		// 8. Enrich with Pod Metadata if mapper is available
 		if mapper != nil {
-			if pod, err := mapper.GetPodByTGID(event.Tgid); err == nil {
+			// Note: event.Pid contains the kernel's tgid (which is the user-space PID)
+			if pod, err := mapper.GetPodByTGID(event.Pid); err == nil {
 				protoEvent.PodName = pod.Name
 				protoEvent.PodNamespace = pod.Namespace
-				log.Printf("[EDGE] Event matched Pod: %s/%s (TGID: %d)", pod.Namespace, pod.Name, event.Tgid)
+				log.Printf("[EDGE] Event matched Pod: %s/%s (PID: %d)", pod.Namespace, pod.Name, event.Pid)
 			}
 		}
 
