@@ -17,6 +17,7 @@ import (
 type ReplayEngine struct {
 	client    *http.Client
 	canaryURL *url.URL
+	OnResult  func(result models.SessionResult)
 }
 
 func NewReplayEngine(targetURL string) (*ReplayEngine, error) {
@@ -46,8 +47,7 @@ func NewReplayEngine(targetURL string) (*ReplayEngine, error) {
 }
 
 // FireAndForget takes an assembled production request and fires it at the canary asynchronously.
-// It returns a minimal summary of the Canary's response.
-func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, fwd Forwarder, connID uint64) {
+func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, connID uint64) {
 	// Execute the replay strictly in a background goroutine so we
 	// NEVER block the BPF ringbuffer or the Go parsers.
 	go func() {
@@ -96,7 +96,7 @@ func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, fwd For
 		log.Printf("[REPLAY] Canary replied with %s %d (took %v). Body payload %d bytes", 
 			resp.Proto, resp.StatusCode, elapsed, len(canaryBody))
 
-		if fwd != nil {
+		if r.OnResult != nil {
 			result := models.SessionResult{
 				ConnID:           connID,
 				ProdReqMethod:    prodReq.Method,
@@ -105,7 +105,7 @@ func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, fwd For
 				CanaryResPayload: canaryBody,
 				Latency:          elapsed,
 			}
-			fwd.Send(result)
+			r.OnResult(result)
 		}
 	}()
 }

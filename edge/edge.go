@@ -45,11 +45,20 @@ type HTTPEvent struct {
 func RunEdge() {
 
 	// Forwarder configuration for sending diffs/summaries to SaaS Collector
-	var fwd Forwarder = forwarder.NewTCPForwarder("127.0.0.1:9000")
-	if err := fwd.Start(context.Background()); err != nil {
-		log.Fatalf("Failed to start forwarder: %v", err)
+	// 1. Initialize Forwarder if collector address is provided
+	var fwd forwarder.Forwarder
+	collectorAddr := os.Getenv("COLLECTOR_ADDR")
+	if collectorAddr != "" {
+		log.Printf("[INFO] Initializing Forwarder to Collector: %s", collectorAddr)
+		fwd = forwarder.NewTCPForwarder(collectorAddr)
+		if err := fwd.Start(context.Background()); err != nil {
+			log.Printf("[WARN] Failed to start Forwarder: %v", err)
+		} else {
+			defer fwd.Close()
+		}
+	} else {
+		log.Println("[INFO] No COLLECTOR_ADDR provided. Reporting disabled.")
 	}
-	defer fwd.Close()
 
 	// Set up a context to handle graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -138,6 +147,15 @@ func RunEdge() {
 		log.Fatalf("Invalid canary URL: %v", err)
 	}
 
+	// 5. Connect the Replay Engine to the Forwarder (if configured)
+	if fwd != nil {
+		replayEngine.OnResult = func(result models.SessionResult) {
+			if err := fwd.Send(result); err != nil {
+				log.Printf("[WARN] Failed to forward result to collector: %v", err)
+			}
+		}
+	}
+
 	streamManager := assembler.NewStreamManager()
 
 	mapper, err := k8s.NewPodMapper(10 * time.Second)
@@ -155,7 +173,7 @@ func RunEdge() {
 		if isProd {
 			log.Printf("[EDGE] Hooked PROD Request: %s %s from %s/%s. Mirroring to Canary.", req.Method, req.URL.String(), podNamespace, podName)
 			// Trigger the Canary replay immediately.
-			replayEngine.FireAndForget(req, body, fwd, 0)
+			replayEngine.FireAndForget(req, body, 0)
 		} else {
 			// Optional: Log other traffic but don't mirror
 			// log.Printf("[EDGE] Observed traffic from %s/%s (not mirroring)", podNamespace, podName)

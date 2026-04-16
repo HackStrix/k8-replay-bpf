@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// Forwarder handles sending replay results to remote collection systems
+type Forwarder interface {
+	Start(ctx context.Context) error
+	Send(msg any) error
+	Close() error
+}
+
 type TCPForwarder struct {
 	addr string
 	conn net.Conn

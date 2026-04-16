@@ -1,0 +1,11 @@
+FROM debian:bookworm-slim
+
+# Install procps for Tilt live-update
+RUN apt-get update && \
+    apt-get install -y procps libc6 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY ./bin/collector /app/collector
+
+CMD ["/app/collector"]
