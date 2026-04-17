@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"log"
+	"syscall"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,8 +26,10 @@ type PodMapper struct {
 	client    *kubernetes.Clientset
 	nodeName  string
 	cache     map[string]*podCacheEntry
+	netnsCache map[uint32]string // netnsID -> containerID
 	cacheLock sync.RWMutex
 	ttl       time.Duration
+	procPath  string
 }
 
 type podCacheEntry struct {
@@ -52,17 +55,25 @@ func NewPodMapper(ttl time.Duration) (*PodMapper, error) {
 		nodeName = hostname
 	}
 
+	procPath := "/proc"
+	if _, err := os.Stat("/host/proc"); err == nil {
+		procPath = "/host/proc"
+		log.Printf("[INFO] Using host proc path: %s", procPath)
+	}
+
 	return &PodMapper{
-		client:   clientset,
-		nodeName: nodeName,
-		cache:    make(map[string]*podCacheEntry),
-		ttl:      ttl,
+		client:     clientset,
+		nodeName:   nodeName,
+		cache:      make(map[string]*podCacheEntry),
+		netnsCache: make(map[uint32]string),
+		ttl:        ttl,
+		procPath:   procPath,
 	}, nil
 }
 
-// GetPodByTGID resolves a TGID to a Pod using /proc/<tgid>/cgroup and K8s API
-func (m *PodMapper) GetPodByTGID(tgid uint32) (*PodInfo, error) {
-	containerID, err := m.getContainerID(tgid)
+// GetPodByNetnsID resolves a Network Namespace Inode to a Pod
+func (m *PodMapper) GetPodByNetnsID(netnsID uint32) (*PodInfo, error) {
+	containerID, err := m.getContainerIDByNetns(netnsID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,9 +81,58 @@ func (m *PodMapper) GetPodByTGID(tgid uint32) (*PodInfo, error) {
 	return m.getPodByContainerID(containerID)
 }
 
-// getContainerID parses /proc/<tgid>/cgroup to find the container ID
+func (m *PodMapper) getContainerIDByNetns(netnsID uint32) (string, error) {
+	m.cacheLock.RLock()
+	id, ok := m.netnsCache[netnsID]
+	m.cacheLock.RUnlock()
+	if ok {
+		return id, nil
+	}
+
+	// Walk proc to find the netns
+	log.Printf("[DEBUG] Walking %s to find netns %d", m.procPath, netnsID)
+	entries, err := os.ReadDir(m.procPath)
+	if err != nil {
+		return "", err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid := entry.Name()
+		// Check if it's a number
+		if pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+
+		nsPath := fmt.Sprintf("%s/%s/ns/net", m.procPath, pid)
+		var st syscall.Stat_t
+		if err := syscall.Stat(nsPath, &st); err != nil {
+			continue
+		}
+
+		if uint32(st.Ino) == netnsID {
+			log.Printf("[DEBUG] Found PID %s for netns %d", pid, netnsID)
+			// Now get container ID from cgroup
+			tgid := 0
+			fmt.Sscanf(pid, "%d", &tgid)
+			containerID, err := m.getContainerID(uint32(tgid))
+			if err == nil {
+				m.cacheLock.Lock()
+				m.netnsCache[netnsID] = containerID
+				m.cacheLock.Unlock()
+				return containerID, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("netns %d not found in %s", netnsID, m.procPath)
+}
+
+// getContainerID parses cgroup to find the container ID
 func (m *PodMapper) getContainerID(tgid uint32) (string, error) {
-	path := fmt.Sprintf("/proc/%d/cgroup", tgid)
+	path := fmt.Sprintf("%s/%d/cgroup", m.procPath, tgid)
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -143,7 +203,7 @@ func (m *PodMapper) getPodByContainerID(containerID string) (*PodInfo, error) {
 }
 
 func (m *PodMapper) queryK8sForContainer(containerID string) (*corev1.Pod, error) {
-	log.Printf("[DEBUG] Querying K8s for container ID: %s on node: %s", containerID, m.nodeName)
+	// log.Printf("[DEBUG] Querying K8s for container ID: %s on node: %s", containerID, m.nodeName)
 	// We sweep all pods on this node
 	pods, err := m.client.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", m.nodeName),

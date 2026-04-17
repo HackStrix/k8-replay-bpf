@@ -15,6 +15,7 @@ spec:
         app: ebpf-repeater
     spec:
       hostPID: true
+      hostNetwork: true
       tolerations:
       - operator: Exists
       containers:
@@ -24,9 +25,13 @@ spec:
         securityContext:
           privileged: true
         volumeMounts:
-        - name: sys-kernel-debug
-          mountPath: /sys/kernel/debug
-          readOnly: false
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        
         resources:
           limits:
             cpu: "500m"
@@ -42,7 +47,10 @@ spec:
         - name: COLLECTOR_ADDR
           value: "collector-service.default.svc.cluster.local:9000"
       volumes:
-      - name: sys-kernel-debug
+      - name: proc
         hostPath:
-          path: /sys/kernel/debug
-          type: DirectoryOrCreate
+          path: /proc
+          readOnly: true
+      - name: sys
+        hostPath:
+          path: /sys

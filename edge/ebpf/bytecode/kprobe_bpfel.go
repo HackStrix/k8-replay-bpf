@@ -20,6 +20,12 @@ type KprobeActiveReadArgs struct {
 	Buf uint64
 }
 
+type KprobeConfig struct {
+	_        structs.HostLayout
+	PidnsDev uint64
+	PidnsIno uint64
+}
+
 type KprobeConnState struct {
 	_          structs.HostLayout
 	LastSeenNs uint64
@@ -95,6 +101,7 @@ type KprobeProgramSpecs struct {
 type KprobeMapSpecs struct {
 	ActiveConns *ebpf.MapSpec `ebpf:"active_conns"`
 	ActiveReads *ebpf.MapSpec `ebpf:"active_reads"`
+	ConfigMap   *ebpf.MapSpec `ebpf:"config_map"`
 	Events      *ebpf.MapSpec `ebpf:"events"`
 }
 
@@ -126,6 +133,7 @@ func (o *KprobeObjects) Close() error {
 type KprobeMaps struct {
 	ActiveConns *ebpf.Map `ebpf:"active_conns"`
 	ActiveReads *ebpf.Map `ebpf:"active_reads"`
+	ConfigMap   *ebpf.Map `ebpf:"config_map"`
 	Events      *ebpf.Map `ebpf:"events"`
 }
 
@@ -133,6 +141,7 @@ func (m *KprobeMaps) Close() error {
 	return _KprobeClose(
 		m.ActiveConns,
 		m.ActiveReads,
+		m.ConfigMap,
 		m.Events,
 	)
 }

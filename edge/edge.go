@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 	"math/rand"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -23,6 +24,7 @@ import (
 	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 	"strings"
 	"time"
+	"github.com/cilium/ebpf"
 )
 
 type ConnState struct {
@@ -79,6 +81,22 @@ func RunEdge() {
 		log.Fatalf("Failed to load eBPF objects: %v", err)
 	}
 	defer objs.Close()
+
+	// Initialize config map for namespace-aware PIDs
+	var st unix.Stat_t
+	if err := unix.Stat("/proc/self/ns/pid", &st); err != nil {
+		log.Printf("[WARN] Failed to stat /proc/self/ns/pid: %v. Namespace-aware PIDs may not work.", err)
+	} else {
+		cfg := ebpf_bytecode.KprobeConfig{
+			PidnsDev: uint64(st.Dev),
+			PidnsIno: uint64(st.Ino),
+		}
+		if err := objs.ConfigMap.Update(uint32(0), &cfg, ebpf.UpdateAny); err != nil {
+			log.Printf("[WARN] Failed to update BPF config map: %v", err)
+		} else {
+			log.Printf("[INFO] Initialized BPF PID namespace config: dev=%d, ino=%d", st.Dev, st.Ino)
+		}
+	}
 
 	tp, err := link.Tracepoint("syscalls", "sys_enter_write", objs.TraceSysWrite, nil)
 	if err != nil {
@@ -238,11 +256,15 @@ func RunEdge() {
 
 		// 8. Enrich with Pod Metadata if mapper is available
 		if mapper != nil {
-			// Note: event.Pid contains the kernel's tgid (which is the user-space PID)
-			if pod, err := mapper.GetPodByTGID(event.Pid); err == nil {
+			// Now using NetnsID as the primary lookup method
+			if pod, err := mapper.GetPodByNetnsID(event.NetnsID); err == nil {
 				protoEvent.PodName = pod.Name
 				protoEvent.PodNamespace = pod.Namespace
-				log.Printf("[EDGE] Event matched Pod: %s/%s (PID: %d)", pod.Namespace, pod.Name, event.Pid)
+				log.Printf("[EDGE] Event matched Pod: %s/%s (NetnsID: %d, PID: %d)", pod.Namespace, pod.Name, event.NetnsID, event.Pid)
+			} else {
+				// Fallback to TGID if NetnsID resolution fails
+				// Note: event.Pid now contains the namespace-local PID if config was initialized
+				log.Printf("[DEBUG] NetnsID resolution failed: %v. Fallback not implemented yet.", err)
 			}
 		}
 

@@ -31,6 +31,19 @@ struct {
 	__type(value, struct http_event);
 } events SEC(".maps");
 
+struct config {
+	u64 pidns_dev;
+	u64 pidns_ino;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct config);
+} config_map SEC(".maps");
+
+
 struct conn_state {
 	u64 last_seen_ns;
 };
@@ -160,8 +173,19 @@ static __always_inline int handle_write(unsigned int fd, const char *buf, size_t
 	}
 
 	// D. Gather Context
-	event->pid = id >> 32; // pid here is actually tgid in kernel context for userspace PID
-	event->tgid = id;      // full id
+	u32 zero = 0;
+	struct config *cfg = bpf_map_lookup_elem(&config_map, &zero);
+	struct bpf_pidns_info ns_info = {};
+	
+	if (cfg && cfg->pidns_ino > 0 && bpf_get_ns_current_pid_tgid(cfg->pidns_dev, cfg->pidns_ino, &ns_info, sizeof(ns_info)) == 0) {
+		event->pid = ns_info.pid;
+		event->tgid = ns_info.tgid;
+	} else {
+		// Fallback to host PIDs if config not available
+		event->pid = id >> 32;
+		event->tgid = id;
+	}
+
 	event->fd = fd;
 	event->direction = DIR_OUTBOUND;
 	
@@ -263,8 +287,17 @@ static __always_inline int handle_exit_read(long ret) {
 		return 0;
 	}
 
-	event->pid = id >> 32;
-	event->tgid = id;
+	u32 zero = 0;
+	struct config *cfg = bpf_map_lookup_elem(&config_map, &zero);
+	struct bpf_pidns_info ns_info = {};
+
+	if (cfg && cfg->pidns_ino > 0 && bpf_get_ns_current_pid_tgid(cfg->pidns_dev, cfg->pidns_ino, &ns_info, sizeof(ns_info)) == 0) {
+		event->pid = ns_info.pid;
+		event->tgid = ns_info.tgid;
+	} else {
+		event->pid = id >> 32;
+		event->tgid = id;
+	}
 	event->fd = args->fd;
 	event->direction = DIR_INBOUND;
 
