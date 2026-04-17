@@ -57,5 +57,5 @@ cluster-down:
 	@./scripts/teardown-cluster.sh
 
 .PHONY: dev
-dev:
+dev: build
 	@~/.local/bin/tilt up
