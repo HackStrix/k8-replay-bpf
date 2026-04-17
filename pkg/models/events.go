@@ -20,10 +20,19 @@ func (d Direction) String() string {
 	}
 }
 
+type Role uint8
+
+const (
+	RoleUnknown Role = 0
+	RoleServer  Role = 1
+	RoleClient  Role = 2
+)
+
 // ProtocolEvent is emitted by the Edge Pipeline directly from eBPF
 type ProtocolEvent struct {
 	ConnID       uint64
 	Direction    Direction
+	Role         Role
 	Timestamp    uint64
 	Payload      []byte // Extracted chunk of the HTTP message
 	PodName      string // Associated Pod Name

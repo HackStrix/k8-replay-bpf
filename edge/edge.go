@@ -39,7 +39,8 @@ type HTTPEvent struct {
 	Fd          uint32
 	Len         uint32
 	Direction   uint8
-	_           [3]byte // Padding to 4-byte boundary
+	Role        uint8
+	_           [2]byte // Padding to 4-byte boundary
 	NetnsID     uint32  // Network Namespace ID
 	Timestamp   uint64
 	Payload     [1024]byte
@@ -133,6 +134,20 @@ func RunEdge() {
 		log.Fatalf("Failed to attach sendto enter tracepoint: %v", err)
 	}
 	defer tpSendtoEnter.Close()
+
+	tpAccept, err := link.Tracepoint("syscalls", "sys_exit_accept", objs.TraceSysExitAccept, nil)
+	if err != nil {
+		log.Printf("[WARN] Failed to attach accept tracepoint: %v (May not support Role mapping)", err)
+	} else {
+		defer tpAccept.Close()
+	}
+
+	tpAccept4, err := link.Tracepoint("syscalls", "sys_exit_accept4", objs.TraceSysExitAccept4, nil)
+	if err != nil {
+		log.Printf("[WARN] Failed to attach accept4 tracepoint: %v (May not support Role mapping)", err)
+	} else {
+		defer tpAccept4.Close()
+	}
 
 	tpClose, err := link.Tracepoint("syscalls", "sys_enter_close", objs.TraceSysClose, nil)
 	if err != nil {
@@ -237,6 +252,7 @@ func RunEdge() {
 		protoEvent := models.ProtocolEvent{
 			ConnID:      connID,
 			Direction:   models.Direction(event.Direction),
+			Role:        models.Role(event.Role),
 			Timestamp:   event.Timestamp,
 			Payload:     actualPayload,
 			NetnsID:     event.NetnsID,
@@ -260,7 +276,9 @@ func RunEdge() {
 			if pod, err := mapper.GetPodByNetnsID(event.NetnsID); err == nil {
 				protoEvent.PodName = pod.Name
 				protoEvent.PodNamespace = pod.Namespace
-				log.Printf("[EDGE] Event matched Pod: %s/%s (NetnsID: %d, PID: %d)", pod.Namespace, pod.Name, event.NetnsID, event.Pid)
+				if !strings.HasPrefix(pod.Name, "ebpf-repeater") {
+					log.Printf("[EDGE] Event matched Pod: %s/%s (NetnsID: %d, PID: %d)", pod.Namespace, pod.Name, event.NetnsID, event.Pid)
+				}
 			} else {
 				// Fallback to TGID if NetnsID resolution fails
 				// Note: event.Pid now contains the namespace-local PID if config was initialized

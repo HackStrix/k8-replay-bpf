@@ -29,6 +29,8 @@ type KprobeConfig struct {
 type KprobeConnState struct {
 	_          structs.HostLayout
 	LastSeenNs uint64
+	Role       uint8
+	_          [7]byte
 }
 
 type KprobeHttpEvent struct {
@@ -38,7 +40,8 @@ type KprobeHttpEvent struct {
 	Fd        uint32
 	Len       uint32
 	Direction uint8
-	_         [3]byte
+	Role      uint8
+	Pad       uint16
 	NetnsId   uint32
 	Timestamp uint64
 	Payload   [1024]int8
@@ -89,6 +92,8 @@ type KprobeProgramSpecs struct {
 	TraceSysClose         *ebpf.ProgramSpec `ebpf:"trace_sys_close"`
 	TraceSysEnterRead     *ebpf.ProgramSpec `ebpf:"trace_sys_enter_read"`
 	TraceSysEnterRecvfrom *ebpf.ProgramSpec `ebpf:"trace_sys_enter_recvfrom"`
+	TraceSysExitAccept    *ebpf.ProgramSpec `ebpf:"trace_sys_exit_accept"`
+	TraceSysExitAccept4   *ebpf.ProgramSpec `ebpf:"trace_sys_exit_accept4"`
 	TraceSysExitRead      *ebpf.ProgramSpec `ebpf:"trace_sys_exit_read"`
 	TraceSysExitRecvfrom  *ebpf.ProgramSpec `ebpf:"trace_sys_exit_recvfrom"`
 	TraceSysSendto        *ebpf.ProgramSpec `ebpf:"trace_sys_sendto"`
@@ -159,6 +164,8 @@ type KprobePrograms struct {
 	TraceSysClose         *ebpf.Program `ebpf:"trace_sys_close"`
 	TraceSysEnterRead     *ebpf.Program `ebpf:"trace_sys_enter_read"`
 	TraceSysEnterRecvfrom *ebpf.Program `ebpf:"trace_sys_enter_recvfrom"`
+	TraceSysExitAccept    *ebpf.Program `ebpf:"trace_sys_exit_accept"`
+	TraceSysExitAccept4   *ebpf.Program `ebpf:"trace_sys_exit_accept4"`
 	TraceSysExitRead      *ebpf.Program `ebpf:"trace_sys_exit_read"`
 	TraceSysExitRecvfrom  *ebpf.Program `ebpf:"trace_sys_exit_recvfrom"`
 	TraceSysSendto        *ebpf.Program `ebpf:"trace_sys_sendto"`
@@ -170,6 +177,8 @@ func (p *KprobePrograms) Close() error {
 		p.TraceSysClose,
 		p.TraceSysEnterRead,
 		p.TraceSysEnterRecvfrom,
+		p.TraceSysExitAccept,
+		p.TraceSysExitAccept4,
 		p.TraceSysExitRead,
 		p.TraceSysExitRecvfrom,
 		p.TraceSysSendto,

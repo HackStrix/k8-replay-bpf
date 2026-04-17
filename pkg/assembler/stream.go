@@ -55,11 +55,23 @@ func (sm *StreamManager) HandleEvent(event models.ProtocolEvent) {
 	sm.mu.Unlock()
 
 	var err error
-	if event.Direction == models.DirInbound {
-		// INBOUND to the pod denotes the HTTP Request
+	
+	// Determine if the payload belongs to the HTTP Request or Response based on Role
+	isRequest := false
+	if event.Role == models.RoleServer {
+		// If we are the Server, inbound traffic is the request, outbound is response
+		isRequest = (event.Direction == models.DirInbound)
+	} else if event.Role == models.RoleClient {
+		// If we are the Client, outbound traffic is the request, inbound is response
+		isRequest = (event.Direction == models.DirOutbound)
+	} else {
+		// Fallback to old behavior if Role is Unknown
+		isRequest = (event.Direction == models.DirInbound)
+	}
+
+	if isRequest {
 		_, err = conn.reqWriter.Write(event.Payload)
 	} else {
-		// OUTBOUND from the pod denotes the HTTP Response
 		_, err = conn.resWriter.Write(event.Payload)
 	}
 

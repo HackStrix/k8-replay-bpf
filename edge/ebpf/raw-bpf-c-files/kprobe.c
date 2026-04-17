@@ -20,6 +20,8 @@ struct http_event {
 	u32 fd;
 	u32 len;
 	u8 direction; // 0=INBOUND (read), 1=OUTBOUND (write)
+	u8 role;      // 0=UNKNOWN, 1=SERVER, 2=CLIENT
+	u16 _pad;
 	u32 netns_id;
 	u64 timestamp;
 	char payload[MAX_PAYLOAD_SIZE];
@@ -46,6 +48,7 @@ struct {
 
 struct conn_state {
 	u64 last_seen_ns;
+	u8 role; // 1=SERVER, 2=CLIENT
 };
 
 // 3. Tracking map for active HTTP connections
@@ -142,22 +145,23 @@ static __always_inline int handle_write(unsigned int fd, const char *buf, size_t
 
 	bool is_new = is_http_request(buf);
 	bool is_active = false;
+	u8 role = 0;
 
 	u64 now = bpf_ktime_get_ns();
 
-	if (is_new) {
-		struct conn_state state = {
-			.last_seen_ns = now,
-		};
-		bpf_map_update_elem(&active_conns, &key, &state, BPF_ANY);
+	struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
+	if (state) {
 		is_active = true;
-	} else {
-		struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
-		if (state) {
-			is_active = true;
-			// Refresh timestamp to stay hot in LRU
-			state->last_seen_ns = now;
-		}
+		state->last_seen_ns = now;
+		role = state->role;
+	} else if (is_new) {
+		struct conn_state new_state = {
+			.last_seen_ns = now,
+			.role = 2, // Client role by default if not pre-registered by accept
+		};
+		bpf_map_update_elem(&active_conns, &key, &new_state, BPF_ANY);
+		is_active = true;
+		role = 2;
 	}
 
 	if (!is_active) {
@@ -188,6 +192,7 @@ static __always_inline int handle_write(unsigned int fd, const char *buf, size_t
 
 	event->fd = fd;
 	event->direction = DIR_OUTBOUND;
+	event->role = role;
 	
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 	event->netns_id = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
@@ -258,20 +263,22 @@ static __always_inline int handle_exit_read(long ret) {
 
 	bool is_new = is_http_request((const char *)args->buf);
 	bool is_active = false;
+	u8 role = 0;
 	u64 now = bpf_ktime_get_ns();
 
-	if (is_new) {
-		struct conn_state state = {
-			.last_seen_ns = now,
-		};
-		bpf_map_update_elem(&active_conns, &key, &state, BPF_ANY);
+	struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
+	if (state) {
 		is_active = true;
-	} else {
-		struct conn_state *state = bpf_map_lookup_elem(&active_conns, &key);
-		if (state) {
-			is_active = true;
-			state->last_seen_ns = now;
-		}
+		state->last_seen_ns = now;
+		role = state->role;
+	} else if (is_new) {
+		struct conn_state new_state = {
+			.last_seen_ns = now,
+			.role = 2, // Client
+		};
+		bpf_map_update_elem(&active_conns, &key, &new_state, BPF_ANY);
+		is_active = true;
+		role = 2;
 	}
 
 	if (!is_active) {
@@ -300,6 +307,7 @@ static __always_inline int handle_exit_read(long ret) {
 	}
 	event->fd = args->fd;
 	event->direction = DIR_INBOUND;
+	event->role = role;
 
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 	event->netns_id = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
@@ -322,6 +330,40 @@ int trace_sys_exit_read(struct trace_event_raw_sys_exit_read *ctx) {
 SEC("tracepoint/syscalls/sys_exit_recvfrom")
 int trace_sys_exit_recvfrom(struct trace_event_raw_sys_exit_read *ctx) {
 	return handle_exit_read(ctx->ret);
+}
+
+// 7. Accept hooks to map ROLE_SERVER explicitly
+struct trace_event_raw_sys_exit_accept {
+	u64 pad;
+	int syscall_nr;
+	u32 __pad;
+	long ret;
+};
+
+static __always_inline int handle_accept(long ret) {
+	if (ret <= 0) return 0;
+	
+	u64 id = bpf_get_current_pid_tgid();
+	u32 tgid = id >> 32;
+	u64 key = (u64)tgid << 32 | ret;
+	
+	struct conn_state state = {
+		.last_seen_ns = bpf_ktime_get_ns(),
+		.role = 1, // ROLE_SERVER
+	};
+	
+	bpf_map_update_elem(&active_conns, &key, &state, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_accept")
+int trace_sys_exit_accept(struct trace_event_raw_sys_exit_accept *ctx) {
+	return handle_accept(ctx->ret);
+}
+
+SEC("tracepoint/syscalls/sys_exit_accept4")
+int trace_sys_exit_accept4(struct trace_event_raw_sys_exit_accept *ctx) {
+	return handle_accept(ctx->ret);
 }
 
 
