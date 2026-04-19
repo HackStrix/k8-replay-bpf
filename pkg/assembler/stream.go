@@ -24,8 +24,8 @@ type connection struct {
 type StreamManager struct {
 	mu         sync.Mutex
 	conns      map[uint64]*connection
-	OnRequest  func(req *http.Request, body []byte, podName, podNamespace string)
-	OnResponse func(res *http.Response, body []byte, podName, podNamespace string)
+	OnRequest  func(connID uint64, req *http.Request, body []byte, podName, podNamespace string)
+	OnResponse func(connID uint64, res *http.Response, body []byte, podName, podNamespace string)
 }
 
 func NewStreamManager() *StreamManager {
@@ -145,7 +145,7 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 
 			if sm.OnRequest != nil {
-				sm.OnRequest(req, bodyBytes, conn.podName, conn.podNamespace)
+				sm.OnRequest(id, req, bodyBytes, conn.podName, conn.podNamespace)
 			}
 		}
 	}()
@@ -181,7 +181,7 @@ func (sm *StreamManager) newConnection(id uint64) *connection {
 			}
 
 			if sm.OnResponse != nil {
-				sm.OnResponse(res, bodyBytes, conn.podName, conn.podNamespace)
+				sm.OnResponse(id, res, bodyBytes, conn.podName, conn.podNamespace)
 			}
 		}
 	}()

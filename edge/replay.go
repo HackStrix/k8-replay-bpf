@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 )
 
 // ReplayEngine handles safely transmitting captured production requests
@@ -17,7 +16,6 @@ import (
 type ReplayEngine struct {
 	client    *http.Client
 	canaryURL *url.URL
-	OnResult  func(result models.SessionResult)
 }
 
 func NewReplayEngine(targetURL string) (*ReplayEngine, error) {
@@ -46,8 +44,16 @@ func NewReplayEngine(targetURL string) (*ReplayEngine, error) {
 	}, nil
 }
 
+// CanaryResult is a subset of SessionResult for the canary replay.
+type CanaryResult struct {
+	Status  int
+	Payload []byte
+	Latency time.Duration
+	Error   error
+}
+
 // FireAndForget takes an assembled production request and fires it at the canary asynchronously.
-func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, connID uint64) {
+func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, connID uint64, onDone func(CanaryResult)) {
 	// Execute the replay strictly in a background goroutine so we
 	// NEVER block the BPF ringbuffer or the Go parsers.
 	go func() {
@@ -84,28 +90,27 @@ func (r *ReplayEngine) FireAndForget(prodReq *http.Request, body []byte, connID 
 		resp, err := r.client.Do(req)
 		elapsed := time.Since(start)
 
-		if err != nil {
+		var canaryBody []byte
+		var canaryStatus int
+		if err == nil {
+			// Drain and close the response body immediately so the Connection Pool can recycle the socket
+			canaryBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			canaryStatus = resp.StatusCode
+
+			log.Printf("[REPLAY] Canary replied with %s %d (took %v). Body payload %d bytes", 
+				resp.Proto, resp.StatusCode, elapsed, len(canaryBody))
+		} else {
 			log.Printf("[REPLAY] Failed to contact Canary: %v", err)
-			return
 		}
-		
-		// Drain and close the response body immediately so the Connection Pool can recycle the socket
-		canaryBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 
-		log.Printf("[REPLAY] Canary replied with %s %d (took %v). Body payload %d bytes", 
-			resp.Proto, resp.StatusCode, elapsed, len(canaryBody))
-
-		if r.OnResult != nil {
-			result := models.SessionResult{
-				ConnID:           connID,
-				ProdReqMethod:    prodReq.Method,
-				ProdReqURL:       prodReq.URL.String(),
-				CanaryResStatus:  resp.StatusCode,
-				CanaryResPayload: canaryBody,
-				Latency:          elapsed,
-			}
-			r.OnResult(result)
+		if onDone != nil {
+			onDone(CanaryResult{
+				Status:  canaryStatus,
+				Payload: canaryBody,
+				Latency: elapsed,
+				Error:   err,
+			})
 		}
 	}()
 }

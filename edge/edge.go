@@ -31,6 +31,7 @@ type ConnState struct {
 	LastSeenNs uint64
 }
 
+
 // 1. Map the C struct exactly.
 // If the memory layout doesn't match the kernel perfectly, your data will be garbage.
 type HTTPEvent struct {
@@ -181,15 +182,6 @@ func RunEdge() {
 		log.Fatalf("Invalid canary URL: %v", err)
 	}
 
-	// 5. Connect the Replay Engine to the Forwarder (if configured)
-	if fwd != nil {
-		replayEngine.OnResult = func(result models.SessionResult) {
-			if err := fwd.Send(result); err != nil {
-				log.Printf("[WARN] Failed to forward result to collector: %v", err)
-			}
-		}
-	}
-
 	streamManager := assembler.NewStreamManager()
 
 	mapper, err := k8s.NewPodMapper(10 * time.Second)
@@ -198,25 +190,49 @@ func RunEdge() {
 	} else {
 		log.Printf("[INFO] Pod Mapper initialized successfully for node: %s", os.Getenv("NODE_NAME"))
 	}
-	
+
+	// 5. Initialize the Session Tracker to bridge Request and Response paths
+	tracker := NewSessionTracker(fwd)
+
 	// Local Smart Proxy Replay Trigger
-	streamManager.OnRequest = func(req *http.Request, body []byte, podName, podNamespace string) {
+	streamManager.OnRequest = func(connID uint64, req *http.Request, body []byte, podName, podNamespace string) {
 		// Check if this request is targeted at our production deployment
 		isProd := strings.HasPrefix(podName, "sample-server-prod")
 		
 		if isProd {
-			log.Printf("[EDGE] Hooked PROD Request: %s %s from %s/%s. Mirroring to Canary.", req.Method, req.URL.String(), podNamespace, podName)
-			// Trigger the Canary replay immediately.
-			replayEngine.FireAndForget(req, body, 0)
-		} else {
-			// Optional: Log other traffic but don't mirror
-			// log.Printf("[EDGE] Observed traffic from %s/%s (not mirroring)", podNamespace, podName)
+			log.Printf("[EDGE] Hooked PROD Request: %s %s from %s/%s. Initiating multi-path tracking.", req.Method, req.URL.String(), podNamespace, podName)
+			
+			session := &SessionState{
+				result: models.SessionResult{
+					ConnID:        connID,
+					ProdReqMethod: req.Method,
+					ProdReqURL:    req.URL.String(),
+				},
+				createdAt: time.Now(),
+			}
+			
+			tracker.Push(connID, session)
+
+			// Trigger Canary Path (Concurrent)
+			replayEngine.FireAndForget(req, body, connID, func(res CanaryResult) {
+				session.UpdateCanary(res)
+				tracker.Finalize(session)
+			})
 		}
 	}
 
-	streamManager.OnResponse = func(res *http.Response, body []byte, podName, podNamespace string) {
+	streamManager.OnResponse = func(connID uint64, res *http.Response, body []byte, podName, podNamespace string) {
 		if strings.HasPrefix(podName, "sample-server-prod") {
-			log.Printf("[EDGE] Hooked PROD Response: %d %s from %s/%s", res.StatusCode, res.Status, podNamespace, podName)
+			log.Printf("[EDGE] Hooked PROD Response: %d %s for ConnID %d", res.StatusCode, res.Status, connID)
+			
+			// Match with the oldest pending request on this connection
+			session := tracker.Pop(connID)
+			if session != nil {
+				session.UpdateProd(res.StatusCode, body)
+				tracker.Finalize(session)
+			} else {
+				log.Printf("[WARN] Orphaned response for ConnID %d (no matching request found)", connID)
+			}
 		}
 	}
 

@@ -47,6 +47,7 @@ type SessionResult struct {
 	ProdReqMethod    string        `json:"prod_req_method"`
 	ProdReqURL       string        `json:"prod_req_url"`
 	ProdResStatus    int           `json:"prod_res_status"`
+	ProdResPayload   []byte        `json:"prod_res_payload"`
 	CanaryResStatus  int           `json:"canary_res_status"`
 	CanaryResPayload []byte        `json:"canary_res_payload"`
 	Latency          time.Duration `json:"latency"`
