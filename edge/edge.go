@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
-	"math/rand"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf/link"
@@ -24,6 +23,7 @@ import (
 	"github.com/hackstrix/k8-replay-bpf/pkg/models"
 	"strings"
 	"time"
+	"sync"
 	"github.com/cilium/ebpf"
 )
 
@@ -238,6 +238,9 @@ func RunEdge() {
 
 	var event HTTPEvent
 
+	// Failure tracking for mapper logs to avoid spam
+	var lastLoggedFailure sync.Map // map[uint32]time.Time
+
 	// 5. The Event Loop - This must be extremely fast.
 	for {
 		record, err := rd.Read()
@@ -257,33 +260,17 @@ func RunEdge() {
 			continue
 		}
 
-		// log.Printf("[DEBUG] Raw Event: TGID=%d, FD=%d, Direction=%d, NetnsID=%d", event.Tgid, event.Fd, event.Direction, event.NetnsID)
-
 		// 7. Safely extract only the populated part of the payload
-		// Event.Len tells us exactly how much of the 1024-byte array is valid.
 		actualPayload := event.Payload[:event.Len]
-
 		connID := (uint64(event.Tgid) << 32) | uint64(event.Fd)
 
 		protoEvent := models.ProtocolEvent{
-			ConnID:      connID,
-			Direction:   models.Direction(event.Direction),
-			Role:        models.Role(event.Role),
-			Timestamp:   event.Timestamp,
-			Payload:     actualPayload,
-			NetnsID:     event.NetnsID,
-		}
-
-		// lets sample 0.5% of all events here to logs
-		if rand.Intn(500) == 0 {
-			log.Printf("[DEBUG] Proto Event ConnID: %d", protoEvent.ConnID)
-			log.Printf("[DEBUG] Proto Event Direction: %d", protoEvent.Direction)
-			log.Printf("[DEBUG] Proto Event Timestamp: %d", protoEvent.Timestamp)
-			// log.Printf("[DEBUG] Proto Event Payload: %s", string(protoEvent.Payload))
-			log.Printf("[DEBUG] Proto Event NetnsID: %d", protoEvent.NetnsID)
-			log.Printf("[DEBUG] Proto Event TGID: %d", event.Tgid)
-			log.Printf("[DEBUG] Proto Event PID: %d", event.Pid)
-			
+			ConnID:    connID,
+			Direction: models.Direction(event.Direction),
+			Role:      models.Role(event.Role),
+			Timestamp: event.Timestamp,
+			Payload:   actualPayload,
+			NetnsID:   event.NetnsID,
 		}
 
 		// 8. Enrich with Pod Metadata if mapper is available
@@ -295,10 +282,14 @@ func RunEdge() {
 				if !strings.HasPrefix(pod.Name, "ebpf-repeater") {
 					log.Printf("[EDGE] Event matched Pod: %s/%s (NetnsID: %d, PID: %d)", pod.Namespace, pod.Name, event.NetnsID, event.Pid)
 				}
+				lastLoggedFailure.Delete(event.NetnsID)
 			} else {
-				// Fallback to TGID if NetnsID resolution fails
-				// Note: event.Pid now contains the namespace-local PID if config was initialized
-				log.Printf("[DEBUG] NetnsID resolution failed: %v. Fallback not implemented yet.", err)
+				// Avoid spamming logs for the same NetnsID failure
+				now := time.Now()
+				if last, ok := lastLoggedFailure.Load(event.NetnsID); !ok || now.Sub(last.(time.Time)) > 1*time.Minute {
+					log.Printf("[DEBUG] NetnsID resolution failed for %d: %v. (Suppressed for 1m)", event.NetnsID, err)
+					lastLoggedFailure.Store(event.NetnsID, now)
+				}
 			}
 		}
 

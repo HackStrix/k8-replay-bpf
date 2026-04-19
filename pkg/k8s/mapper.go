@@ -26,7 +26,7 @@ type PodMapper struct {
 	client    *kubernetes.Clientset
 	nodeName  string
 	cache     map[string]*podCacheEntry
-	netnsCache map[uint32]string // netnsID -> containerID
+	netnsCache map[uint32]*netnsCacheEntry // netnsID -> identifier cache
 	cacheLock sync.RWMutex
 	ttl       time.Duration
 	procPath  string
@@ -35,6 +35,13 @@ type PodMapper struct {
 type podCacheEntry struct {
 	info      *PodInfo
 	expiresAt time.Time
+}
+
+type netnsCacheEntry struct {
+	containerID string
+	podUID      string
+	notFound    bool
+	expiresAt   time.Time
 }
 
 func NewPodMapper(ttl time.Duration) (*PodMapper, error) {
@@ -65,7 +72,7 @@ func NewPodMapper(ttl time.Duration) (*PodMapper, error) {
 		client:     clientset,
 		nodeName:   nodeName,
 		cache:      make(map[string]*podCacheEntry),
-		netnsCache: make(map[uint32]string),
+		netnsCache: make(map[uint32]*netnsCacheEntry),
 		ttl:        ttl,
 		procPath:   procPath,
 	}, nil
@@ -83,12 +90,16 @@ func (m *PodMapper) GetPodByNetnsID(netnsID uint32) (*PodInfo, error) {
 
 func (m *PodMapper) getIdentifiersByNetns(netnsID uint32) (string, string, error) {
 	m.cacheLock.RLock()
-	id, ok := m.netnsCache[netnsID]
+	entry, ok := m.netnsCache[netnsID]
 	m.cacheLock.RUnlock()
+	
 	if ok {
-		// For simplicity, we only cache the containerID for now,
-		// but we might need to cache podUID too if lookups fail.
-		return id, "", nil
+		if time.Now().Before(entry.expiresAt) {
+			if entry.notFound {
+				return "", "", fmt.Errorf("netns %d previously not found in %s (cached)", netnsID, m.procPath)
+			}
+			return entry.containerID, entry.podUID, nil
+		}
 	}
 
 	// Walk proc to find the netns
@@ -122,12 +133,24 @@ func (m *PodMapper) getIdentifiersByNetns(netnsID uint32) (string, string, error
 			containerID, podUID, err := m.getIdentifiers(uint32(tgid))
 			if err == nil {
 				m.cacheLock.Lock()
-				m.netnsCache[netnsID] = containerID
+				m.netnsCache[netnsID] = &netnsCacheEntry{
+					containerID: containerID,
+					podUID:      podUID,
+					expiresAt:   time.Now().Add(m.ttl),
+				}
 				m.cacheLock.Unlock()
 				return containerID, podUID, nil
 			}
 		}
 	}
+
+	// Negative Caching: Cache the failure
+	m.cacheLock.Lock()
+	m.netnsCache[netnsID] = &netnsCacheEntry{
+		notFound:  true,
+		expiresAt: time.Now().Add(m.ttl),
+	}
+	m.cacheLock.Unlock()
 
 	return "", "", fmt.Errorf("netns %d not found in %s", netnsID, m.procPath)
 }
